@@ -7,6 +7,7 @@ type ViewKey = 'feed' | 'user' | 'profile' | 'dm';
 type FeedViewerProfile = {
   name: string;
   avatar_char?: string;
+  user_handle?: string;
   posts_count?: number;
   followers_count?: number;
   following_count?: number;
@@ -34,6 +35,7 @@ type FeedPostReply = {
 
 type FeedPostComment = {
   author: string;
+  handle?: string;
   avatar?: string;
   text: string;
   replies?: FeedPostReply[];
@@ -45,12 +47,13 @@ type FeedPost = {
   tags?: string[];
   image_caption?: string;
   stats: FeedPostStats;
-  npc_comments?: FeedPostComment[];
+  people_comments?: FeedPostComment[];
 };
 
 type EchoChamberFeed = {
   viewer_profile?: FeedViewerProfile;
   posts?: FeedPost[];
+  match_List?: { match: FeedPostUser }[];
 };
 
 type ProfileStats = {
@@ -136,6 +139,126 @@ type RootData = {
   direct_message_thread?: DirectMessageThread;
 };
 
+type NpcChatRecord = {
+  key: string;
+  updated_at: number;
+  messages: DMMessage[];
+};
+
+type NpcChatExportPayload = {
+  version: number;
+  exported_at: number;
+  chats: NpcChatRecord[];
+};
+
+const NPC_DB_NAME = 'echo_chamber';
+const NPC_DB_VERSION = 1;
+const NPC_STORE_NAME = 'npc_chats';
+
+const openNpcChatDb = () =>
+  new Promise<IDBDatabase>((resolve, reject) => {
+    if (!('indexedDB' in window)) {
+      reject(new Error('IndexedDB is not available'));
+      return;
+    }
+    const request = indexedDB.open(NPC_DB_NAME, NPC_DB_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(NPC_STORE_NAME)) {
+        db.createObjectStore(NPC_STORE_NAME, { keyPath: 'key' });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+
+const readNpcChat = async (key: string): Promise<NpcChatRecord | null> => {
+  const db = await openNpcChatDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(NPC_STORE_NAME, 'readonly');
+    const store = tx.objectStore(NPC_STORE_NAME);
+    const req = store.get(key);
+    req.onsuccess = () => resolve((req.result as NpcChatRecord) ?? null);
+    req.onerror = () => reject(req.error);
+    tx.oncomplete = () => db.close();
+    tx.onerror = () => db.close();
+  });
+};
+
+const listNpcChats = async (): Promise<NpcChatRecord[]> => {
+  const db = await openNpcChatDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(NPC_STORE_NAME, 'readonly');
+    const store = tx.objectStore(NPC_STORE_NAME);
+    const req = store.getAll();
+    req.onsuccess = () => resolve((req.result as NpcChatRecord[]) ?? []);
+    req.onerror = () => reject(req.error);
+    tx.oncomplete = () => db.close();
+    tx.onerror = () => db.close();
+  });
+};
+
+const writeNpcChat = async (key: string, messages: DMMessage[]) => {
+  const db = await openNpcChatDb();
+  return new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(NPC_STORE_NAME, 'readwrite');
+    const store = tx.objectStore(NPC_STORE_NAME);
+    store.put({ key, updated_at: Date.now(), messages });
+    tx.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    tx.onerror = () => {
+      db.close();
+      reject(tx.error);
+    };
+  });
+};
+
+const deleteNpcChat = async (key: string) => {
+  const db = await openNpcChatDb();
+  return new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(NPC_STORE_NAME, 'readwrite');
+    const store = tx.objectStore(NPC_STORE_NAME);
+    store.delete(key);
+    tx.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    tx.onerror = () => {
+      db.close();
+      reject(tx.error);
+    };
+  });
+};
+
+const normalizeNpcChatRecord = (input: unknown): NpcChatRecord | null => {
+  if (!input || typeof input !== 'object') return null;
+  const record = input as Record<string, unknown>;
+  const key = String(record.key ?? record.npc_key ?? '').trim();
+  if (!key) return null;
+  const rawMessages = Array.isArray(record.messages) ? record.messages : [];
+  const messages = rawMessages
+    .map((message) => {
+      const item = message as Record<string, unknown>;
+      const sender = String(item.sender_handle ?? '');
+      const content = String(item.content ?? '');
+      if (!sender || !content) return null;
+      return {
+        sender_handle: sender,
+        content,
+        is_read: typeof item.is_read === 'boolean' ? item.is_read : undefined,
+        timestamp: typeof item.timestamp === 'string' ? item.timestamp : undefined,
+      } satisfies DMMessage;
+    })
+    .filter((item): item is DMMessage => !!item);
+  return {
+    key,
+    updated_at: Number(record.updated_at ?? Date.now()),
+    messages,
+  };
+};
+
 const parseYamlSource = (source: string): RootData => {
   try {
     return (parse(source) as RootData) ?? {};
@@ -175,6 +298,24 @@ const resolveMacrosDeep = (value: unknown): unknown => {
     );
   }
   return value;
+};
+
+const normalizeEchoChamberFeed = (feed: EchoChamberFeed): EchoChamberFeed => {
+  if (!feed.posts) return feed;
+  const normalizedPosts = feed.posts.map((post) => {
+    const record = post as FeedPost & { People_comments?: FeedPostComment[] };
+    if (!record.people_comments && record.People_comments) {
+      return {
+        ...record,
+        people_comments: record.People_comments,
+      };
+    }
+    return post;
+  });
+  return {
+    ...feed,
+    posts: normalizedPosts,
+  };
 };
 
 const isRootData = (value: unknown): value is RootData => {
@@ -273,6 +414,55 @@ const readEchoChamberVariables = (): RootData | null => {
   return null;
 };
 
+const updateStatData = async (
+  apply: (statData: Record<string, unknown>) => void,
+  refresh: () => void,
+): Promise<void> => {
+  const option: VariableOption =
+    typeof getCurrentMessageId === 'function'
+      ? { type: 'message', message_id: getCurrentMessageId() }
+      : { type: 'message', message_id: 'latest' };
+
+  const updateWithVars = (vars: Record<string, unknown>) => {
+    const next = _.cloneDeep(vars ?? {});
+    const statData = (_.get(next, 'stat_data') as Record<string, unknown>) ?? {};
+    apply(statData);
+    _.set(next, 'stat_data', statData);
+    return next;
+  };
+
+  try {
+    if (typeof waitGlobalInitialized === 'function') {
+      await waitGlobalInitialized('Mvu');
+    }
+  } catch (error) {
+    console.warn('Failed waiting for MVU:', error);
+  }
+
+  try {
+    if (typeof Mvu !== 'undefined' && typeof Mvu.getMvuData === 'function') {
+      const vars = (Mvu.getMvuData(option) as Record<string, unknown>) ?? {};
+      const next = updateWithVars(vars);
+      await Mvu.replaceMvuData(next, option);
+      refresh();
+      return;
+    }
+  } catch (error) {
+    console.warn('Failed to update MVU data:', error);
+  }
+
+  try {
+    if (typeof getVariables === 'function' && typeof replaceVariables === 'function') {
+      const vars = (getVariables(option) as Record<string, unknown>) ?? {};
+      const next = updateWithVars(vars);
+      replaceVariables(next, option);
+      refresh();
+    }
+  } catch (error) {
+    console.warn('Failed to update variables:', error);
+  }
+};
+
 const getInitialChar = (value?: string, fallback = '？') => {
   const trimmed = value?.trim();
   return trimmed && trimmed.length > 0 ? trimmed[0] : fallback;
@@ -284,6 +474,9 @@ const App: React.FC = () => {
     const variableData = readEchoChamberVariables();
     if (!variableData) return;
     const next = resolveMacrosDeep(variableData) as RootData;
+    if (next.echo_chamber_feed) {
+      next.echo_chamber_feed = normalizeEchoChamberFeed(next.echo_chamber_feed);
+    }
     setData(next);
   }, []);
 
@@ -294,10 +487,32 @@ const App: React.FC = () => {
   const feedViewer: FeedViewerProfile = feedData.viewer_profile ?? {
     name: '访客',
     avatar_char: '访',
+    user_handle: '@user',
     posts_count: 0,
     followers_count: 0,
     following_count: 0,
   };
+  const matchList = useMemo(
+    () =>
+      (feedData.match_List ?? [])
+        .map((item) => item.match)
+        .filter((item): item is FeedPostUser => !!item && typeof item.handle === 'string'),
+    [feedData.match_List],
+  );
+  const isViewerComment = useCallback(
+    (comment?: FeedPostComment | null) => {
+      if (!comment) return false;
+      if (feedViewer.user_handle && comment.handle) {
+        return comment.handle === feedViewer.user_handle;
+      }
+      return comment.author === feedViewer.name;
+    },
+    [feedViewer.name, feedViewer.user_handle],
+  );
+  const isViewerReply = useCallback(
+    (reply?: FeedPostReply | null) => (reply ? reply.from === feedViewer.name : false),
+    [feedViewer.name],
+  );
 
   const profileUser: ProfileUser = userPageData.profile_user ?? {
     name: '未知用户',
@@ -320,14 +535,15 @@ const App: React.FC = () => {
   };
 
   const dmPartner: DMParticipant = dmData.participants?.chat_partner ?? {
-    name: '对方',
-    handle: '@partner',
-    avatar_char: '对',
-    avatar_icon: '对',
-    avatar_bg: '#94a3b8',
+    name: '',
+    handle: '',
+    avatar_char: '',
+    avatar_icon: '',
+    avatar_bg: '',
   };
 
   const [activeView, setActiveView] = useState<ViewKey>('feed');
+  const [dmPartnerOverride, setDmPartnerOverride] = useState<DMParticipant | null>(null);
   const [dmBackTarget, setDmBackTarget] = useState<ViewKey>('profile');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [themeDark, setThemeDark] = useState(false);
@@ -335,6 +551,8 @@ const App: React.FC = () => {
 
   const [feedPosts, setFeedPosts] = useState<FeedPost[]>(() => feedData.posts ?? []);
   const [feedOpenComments, setFeedOpenComments] = useState<Record<number, boolean>>({});
+  const [feedReplyInputs, setFeedReplyInputs] = useState<Record<number, string>>({});
+  const [feedReplyTargets, setFeedReplyTargets] = useState<Record<number, 'post' | number>>({});
 
   const [userPosts, setUserPosts] = useState<ProfilePost[]>(() => userPageData.posts ?? []);
   const [userOpenComments, setUserOpenComments] = useState<Record<number, boolean>>({});
@@ -350,6 +568,7 @@ const App: React.FC = () => {
   const [dmMessages, setDmMessages] = useState<DMMessage[]>(() => dmData.messages ?? []);
   const [dmStagedMessages, setDmStagedMessages] = useState<string[]>([]);
   const [dmInput, setDmInput] = useState('');
+  const dmImportInputRef = useRef<HTMLInputElement | null>(null);
 
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState('');
@@ -357,6 +576,12 @@ const App: React.FC = () => {
   const [isChatSending, setIsChatSending] = useState(false);
   const chatStreamRef = useRef<HTMLDivElement>(null);
   const chatSyncTimerRef = useRef<number | null>(null);
+  const activeDmPartner = dmPartnerOverride ?? dmPartner;
+  const hasActivePartner = Boolean(activeDmPartner.handle || activeDmPartner.name);
+  const dmKey = useMemo(
+    () => activeDmPartner.handle || activeDmPartner.name || '',
+    [activeDmPartner.handle, activeDmPartner.name],
+  );
   useEffect(() => {
     document.body.classList.toggle('theme-dark', themeDark);
     return () => {
@@ -371,6 +596,8 @@ const App: React.FC = () => {
   useEffect(() => {
     setFeedPosts(data.echo_chamber_feed?.posts ?? []);
     setFeedOpenComments({});
+    setFeedReplyInputs({});
+    setFeedReplyTargets({});
   }, [data.echo_chamber_feed]);
 
   useEffect(() => {
@@ -384,6 +611,37 @@ const App: React.FC = () => {
   useEffect(() => {
     setDmMessages(data.direct_message_thread?.messages ?? []);
   }, [data.direct_message_thread]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!dmKey) return undefined;
+    const load = async () => {
+      try {
+        const record = await readNpcChat(dmKey);
+        if (cancelled || !record?.messages?.length) return;
+        setDmMessages((current) => {
+          const base = data.direct_message_thread?.messages ?? current;
+          return record.messages.length > base.length ? record.messages : base;
+        });
+      } catch (error) {
+        console.warn('Failed to load NPC chat:', error);
+      }
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [dmKey, data.direct_message_thread?.messages]);
+
+  useEffect(() => {
+    if (!dmKey) return;
+    const timer = window.setTimeout(() => {
+      void writeNpcChat(dmKey, dmMessages).catch((error) => {
+        console.warn('Failed to persist NPC chat:', error);
+      });
+    }, 200);
+    return () => window.clearTimeout(timer);
+  }, [dmKey, dmMessages]);
 
   useEffect(() => {
     let stopped = false;
@@ -513,6 +771,59 @@ const App: React.FC = () => {
     }
   };
 
+  const handleExportNpcChats = async () => {
+    try {
+      const chats = await listNpcChats();
+      const payload: NpcChatExportPayload = {
+        version: 1,
+        exported_at: Date.now(),
+        chats,
+      };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `echo_chamber_npc_chats_${new Date().toISOString().slice(0, 10)}.json`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.warn('Failed to export NPC chats:', error);
+    }
+  };
+
+  const handleDeleteNpcChat = async () => {
+    if (!dmKey) return;
+    const name = activeDmPartner.name || dmKey;
+    if (!window.confirm(`确定清空与「${name}」的聊天记录吗？`)) return;
+    try {
+      await deleteNpcChat(dmKey);
+      setDmMessages(data.direct_message_thread?.messages ?? []);
+      setDmStagedMessages([]);
+      setDmInput('');
+    } catch (error) {
+      console.warn('Failed to delete NPC chat:', error);
+    }
+  };
+
+  const handleImportNpcChatsFile: React.ChangeEventHandler<HTMLInputElement> = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text) as NpcChatExportPayload | NpcChatRecord[];
+      const list = Array.isArray(parsed) ? parsed : parsed?.chats ?? [];
+      const normalized = list
+        .map((item) => normalizeNpcChatRecord(item))
+        .filter((item): item is NpcChatRecord => !!item);
+      await Promise.all(normalized.map((item) => writeNpcChat(item.key, item.messages)));
+      const current = normalized.find((item) => item.key === dmKey);
+      if (current) setDmMessages(current.messages);
+    } catch (error) {
+      console.warn('Failed to import NPC chats:', error);
+    }
+  };
+
   const handleSendChat = async () => {
     if (isChatSending) return;
     const content = chatInput.trim();
@@ -551,6 +862,152 @@ const App: React.FC = () => {
       scheduleChatSync();
     }
   };
+
+  const handleFeedReplySend = (postIndex: number) => {
+    const content = (feedReplyInputs[postIndex] ?? '').trim();
+    if (!content) return;
+    const post = feedPosts[postIndex];
+    if (!post) return;
+    const peopleComments = post.people_comments ?? [];
+    const target = feedReplyTargets[postIndex] ?? 'post';
+    const targetIndex = typeof target === 'number' ? target : null;
+    if (targetIndex !== null && !peopleComments[targetIndex]) return;
+
+    const reply: FeedPostReply = {
+      from: feedViewer.name,
+      to: targetIndex !== null ? peopleComments[targetIndex]?.author : post.user.name,
+      avatar: feedViewer.avatar_char ?? getInitialChar(feedViewer.name, ''),
+      text: content,
+    };
+    const newComment: FeedPostComment = {
+      author: feedViewer.name,
+      handle: feedViewer.user_handle,
+      avatar: feedViewer.avatar_char ?? getInitialChar(feedViewer.name, ''),
+      text: content,
+      replies: [],
+    };
+
+    setFeedPosts((prev) =>
+      prev.map((item, idx) => {
+        if (idx !== postIndex) return item;
+        const nextComments =
+          targetIndex !== null
+            ? (item.people_comments ?? []).map((comment, commentIdx) => {
+                if (commentIdx !== targetIndex) return comment;
+                return {
+                  ...comment,
+                  replies: [...(comment.replies ?? []), reply],
+                };
+              })
+            : [...(item.people_comments ?? []), newComment];
+        return {
+          ...item,
+          people_comments: nextComments,
+          stats: {
+            ...item.stats,
+            comments: (item.stats.comments ?? 0) + 1,
+          },
+        };
+      }),
+    );
+
+    setFeedReplyInputs((prev) => ({ ...prev, [postIndex]: '' }));
+
+    void updateStatData(
+      (statData) => {
+        const basePath = `echo_chamber_feed.posts.${postIndex}`;
+        if (targetIndex === null) {
+          const commentsPath = `${basePath}.people_comments`;
+          const comments = (_.get(statData, commentsPath) as FeedPostComment[]) ?? [];
+          comments.push(newComment);
+          _.set(statData, commentsPath, comments);
+        } else {
+          const repliesPath = `${basePath}.people_comments.${targetIndex}.replies`;
+          const replies = (_.get(statData, repliesPath) as FeedPostReply[]) ?? [];
+          replies.push(reply);
+          _.set(statData, repliesPath, replies);
+        }
+        _.update(statData, `${basePath}.stats.comments`, (value) => Number(value ?? 0) + 1);
+      },
+      refreshData,
+    );
+  };
+
+  const handleDeleteFeedComment = (postIndex: number, commentIndex: number) => {
+    const post = feedPosts[postIndex];
+    if (!post) return;
+    const comments = post.people_comments ?? [];
+    const targetComment = comments[commentIndex];
+    if (!targetComment) return;
+    const removedCount = 1 + (targetComment.replies?.length ?? 0);
+
+    setFeedPosts((prev) =>
+      prev.map((item, idx) => {
+        if (idx !== postIndex) return item;
+        const nextComments = (item.people_comments ?? []).filter((_, idx2) => idx2 !== commentIndex);
+        return {
+          ...item,
+          people_comments: nextComments,
+          stats: {
+            ...item.stats,
+            comments: Math.max(0, (item.stats.comments ?? 0) - removedCount),
+          },
+        };
+      }),
+    );
+
+    void updateStatData(
+      (statData) => {
+        const basePath = `echo_chamber_feed.posts.${postIndex}`;
+        const commentsPath = `${basePath}.people_comments`;
+        const comments = (_.get(statData, commentsPath) as FeedPostComment[]) ?? [];
+        comments.splice(commentIndex, 1);
+        _.set(statData, commentsPath, comments);
+        _.update(statData, `${basePath}.stats.comments`, (value) =>
+          Math.max(0, Number(value ?? 0) - removedCount),
+        );
+      },
+      refreshData,
+    );
+  };
+
+  const handleDeleteFeedReply = (postIndex: number, commentIndex: number, replyIndex: number) => {
+    const post = feedPosts[postIndex];
+    if (!post) return;
+    const comment = post.people_comments?.[commentIndex];
+    if (!comment?.replies?.[replyIndex]) return;
+
+    setFeedPosts((prev) =>
+      prev.map((item, idx) => {
+        if (idx !== postIndex) return item;
+        const nextComments = (item.people_comments ?? []).map((itemComment, idx2) => {
+          if (idx2 !== commentIndex) return itemComment;
+          const nextReplies = (itemComment.replies ?? []).filter((_, idx3) => idx3 !== replyIndex);
+          return { ...itemComment, replies: nextReplies };
+        });
+        return {
+          ...item,
+          people_comments: nextComments,
+          stats: {
+            ...item.stats,
+            comments: Math.max(0, (item.stats.comments ?? 0) - 1),
+          },
+        };
+      }),
+    );
+
+    void updateStatData(
+      (statData) => {
+        const basePath = `echo_chamber_feed.posts.${postIndex}`;
+        const repliesPath = `${basePath}.people_comments.${commentIndex}.replies`;
+        const replies = (_.get(statData, repliesPath) as FeedPostReply[]) ?? [];
+        replies.splice(replyIndex, 1);
+        _.set(statData, repliesPath, replies);
+        _.update(statData, `${basePath}.stats.comments`, (value) => Math.max(0, Number(value ?? 0) - 1));
+      },
+      refreshData,
+    );
+  };
   const toggleFeedLike = (index: number) => {
     setFeedPosts((prev) =>
       prev.map((post, idx) => {
@@ -566,6 +1023,20 @@ const App: React.FC = () => {
           },
         };
       }),
+    );
+    void updateStatData(
+      (statData) => {
+        const path = `echo_chamber_feed.posts.${index}.stats`;
+        const stats = (_.get(statData, path) as FeedPostStats) ?? {};
+        const isLiked = !!stats.is_liked_by_viewer;
+        const likes = Number(stats.likes ?? 0);
+        _.set(statData, path, {
+          ...stats,
+          is_liked_by_viewer: !isLiked,
+          likes: Math.max(0, isLiked ? likes - 1 : likes + 1),
+        });
+      },
+      refreshData,
     );
   };
 
@@ -585,6 +1056,20 @@ const App: React.FC = () => {
         };
       }),
     );
+    void updateStatData(
+      (statData) => {
+        const path = `user_profile_page.posts.${index}.stats`;
+        const stats = (_.get(statData, path) as ProfilePostStats) ?? {};
+        const isLiked = !!stats.is_liked_by_viewer;
+        const likes = Number(stats.likes ?? 0);
+        _.set(statData, path, {
+          ...stats,
+          is_liked_by_viewer: !isLiked,
+          likes: Math.max(0, isLiked ? likes - 1 : likes + 1),
+        });
+      },
+      refreshData,
+    );
   };
 
   const toggleProfileLike = (index: number) => {
@@ -603,10 +1088,25 @@ const App: React.FC = () => {
         };
       }),
     );
+    void updateStatData(
+      (statData) => {
+        const path = `user_profile_page.posts.${index}.stats`;
+        const stats = (_.get(statData, path) as ProfilePostStats) ?? {};
+        const isLiked = !!stats.is_liked_by_viewer;
+        const likes = Number(stats.likes ?? 0);
+        _.set(statData, path, {
+          ...stats,
+          is_liked_by_viewer: !isLiked,
+          likes: Math.max(0, isLiked ? likes - 1 : likes + 1),
+        });
+      },
+      refreshData,
+    );
   };
 
-  const openDm = (fromView: ViewKey) => {
+  const openDm = (fromView: ViewKey, partner?: DMParticipant | null) => {
     setDmBackTarget(fromView);
+    setDmPartnerOverride(partner ?? null);
     setActiveView('dm');
   };
 
@@ -842,9 +1342,10 @@ const App: React.FC = () => {
                         <button
                           type="button"
                           className="footer-action"
-                          onClick={() =>
-                            setFeedOpenComments((prev) => ({ ...prev, [index]: !prev[index] }))
-                          }
+                          onClick={() => {
+                            setFeedOpenComments((prev) => ({ ...prev, [index]: !prev[index] }));
+                            setFeedReplyTargets((prev) => ({ ...prev, [index]: 'post' }));
+                          }}
                         >
                           <svg viewBox="0 0 24 24">
                             <path d="M14.046 2.242l-4.148-.01h-.002c-4.374 0-7.8 3.427-7.8 7.802 0 4.098 3.186 7.206 7.465 7.37v3.828c0 .108.044.286.12.403.142.225.384.347.632.347.138 0 .277-.038.402-.118.264-.168 6.473-4.14 8.088-5.506 1.902-1.61 3.04-3.97 3.043-6.312v-.017c-.006-4.367-3.43-7.787-7.8-7.788zm3.787 12.972c-1.134.96-4.862 3.405-6.772 4.643V16.67c.615.033 1.22.048 1.81.048 3.456 0 6.262-2.806 6.262-6.262 0-1.556-.56-2.96-1.5-4.064 1.248 1.39 1.953 3.13 1.953 5.013v.002c0 1.96-1.022 3.85-2.755 5.16z"></path>
@@ -867,13 +1368,28 @@ const App: React.FC = () => {
                         style={{ display: feedOpenComments[index] ? 'block' : 'none' }}
                       >
                         <div className="comments-list">
-                          {(post.npc_comments ?? []).map((comment, commentIndex) => (
+                          {(post.people_comments ?? []).map((comment, commentIndex) => (
                             <div key={`${comment.author}-${commentIndex}`} className="comment-item">
                               <div className="comment-avatar">{comment.avatar ?? getInitialChar(comment.author)}</div>
                               <div className="comment-content">
                                 <div className="comment-user-info-container">
                                   <span className="comment-user-name">{comment.author}</span>
-                                  <button type="button" className="comment-reply-btn">
+                                  {isViewerComment(comment) && (
+                                    <button
+                                      type="button"
+                                      className="comment-delete-btn"
+                                      onClick={() => handleDeleteFeedComment(index, commentIndex)}
+                                    >
+                                      删除
+                                    </button>
+                                  )}
+                                  <button
+                                    type="button"
+                                    className="comment-reply-btn"
+                                    onClick={() =>
+                                      setFeedReplyTargets((prev) => ({ ...prev, [index]: commentIndex }))
+                                    }
+                                  >
                                     回复
                                   </button>
                                 </div>
@@ -891,6 +1407,17 @@ const App: React.FC = () => {
                                                 <span className="reply-to-tag">回复 {reply.to}</span>
                                               )}
                                             </span>
+                                            {isViewerReply(reply) && (
+                                              <button
+                                                type="button"
+                                                className="reply-delete-btn"
+                                                onClick={() =>
+                                                  handleDeleteFeedReply(index, commentIndex, replyIndex)
+                                                }
+                                              >
+                                                删除
+                                              </button>
+                                            )}
                                           </div>
                                           <span className="reply-text">{reply.text}</span>
                                         </div>
@@ -903,8 +1430,22 @@ const App: React.FC = () => {
                           ))}
                         </div>
                         <div className="comment-input-area">
-                          <textarea className="comment-input" placeholder="添加你的评论…" rows={1}></textarea>
-                          <button type="button" className="comment-send-btn">
+                          <textarea
+                            className="comment-input"
+                            placeholder={
+                              (feedReplyTargets[index] ?? 'post') === 'post'
+                                ? `评论 ${post.user.name}…`
+                                : `回复 ${post.people_comments?.[
+                                    feedReplyTargets[index] as number
+                                  ]?.author ?? '评论'}…`
+                            }
+                            rows={1}
+                            value={feedReplyInputs[index] ?? ''}
+                            onChange={(event) =>
+                              setFeedReplyInputs((prev) => ({ ...prev, [index]: event.target.value }))
+                            }
+                          ></textarea>
+                          <button type="button" className="comment-send-btn" onClick={() => handleFeedReplySend(index)}>
                             发送
                           </button>
                         </div>
@@ -930,11 +1471,14 @@ const App: React.FC = () => {
                         className="profile-avatar"
                         style={{ background: profileUser.avatar_bg ?? 'linear-gradient(135deg,#88f,#f88)' }}
                       >
-                        {profileUser.avatar_char ?? profileUser.avatar_icon ?? getInitialChar(profileUser.name)}
+                        {feedViewer.avatar_char ??
+                          profileUser.avatar_char ??
+                          profileUser.avatar_icon ??
+                          getInitialChar(feedViewer.name ?? profileUser.name)}
                       </div>
                     </div>
-                    <h1 className="profile-name">{profileUser.name}</h1>
-                    <p className="profile-handle">{profileUser.handle}</p>
+                    <h1 className="profile-name">{feedViewer.name ?? profileUser.name}</h1>
+                    <p className="profile-handle">{feedViewer.user_handle ?? ''}</p>
                     <div className="profile-signature" onClick={handleEditSignature}>
                       <span>{userSignature || '点击编辑签名'}</span>
                       <svg className="edit-icon" width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
@@ -944,15 +1488,19 @@ const App: React.FC = () => {
                   </div>
                   <div className="profile-stats">
                     <div className="stat-item">
-                      <span className="stat-value">{userPosts.length}</span>
+                      <span className="stat-value">{feedViewer.posts_count ?? userPosts.length}</span>
                       <span className="stat-label">动态</span>
                     </div>
                     <div className="stat-item" onClick={() => setDrawerMode('following')}>
-                      <span className="stat-value">{profileUser.stats?.following ?? 0}</span>
+                      <span className="stat-value">
+                        {feedViewer.following_count ?? profileUser.stats?.following ?? 0}
+                      </span>
                       <span className="stat-label">正在关注</span>
                     </div>
                     <div className="stat-item" onClick={() => setDrawerMode('followers')}>
-                      <span className="stat-value">{profileUser.stats?.followers ?? 0}</span>
+                      <span className="stat-value">
+                        {feedViewer.followers_count ?? profileUser.stats?.followers ?? 0}
+                      </span>
                       <span className="stat-label">关注者</span>
                     </div>
                   </div>
@@ -1264,99 +1812,201 @@ const App: React.FC = () => {
               <div className="phone-screen">
                 <div className="dm-page">
                   <header className="dm-header">
-                    <button className="back-btn" type="button" onClick={() => setActiveView(dmBackTarget)}>
-                      ?
+                    <button
+                      className="back-btn"
+                      type="button"
+                      onClick={() => {
+                        if (hasActivePartner) {
+                          setDmPartnerOverride(null);
+                          return;
+                        }
+                        setActiveView(dmBackTarget);
+                      }}
+                    >
+                      <svg viewBox="0 0 24 24">
+                        <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"></path>
+                      </svg>
                     </button>
+                    {hasActivePartner && (
+                      <div
+                        className="dm-header-avatar"
+                        style={{ background: activeDmPartner.avatar_bg ?? 'linear-gradient(135deg,#88f,#f88)' }}
+                      >
+                        {activeDmPartner.avatar_icon ??
+                          activeDmPartner.avatar_char ??
+                          getInitialChar(activeDmPartner.name, '')}
+                      </div>
+                    )}
                     <div className="user-info">
-                      <span className="user-name">{dmPartner.name}</span>
-                      <span className="user-handle">{dmPartner.handle}</span>
+                      {hasActivePartner ? (
+                        <>
+                          <span className="user-name">{activeDmPartner.name}</span>
+                          <span className="user-handle">{activeDmPartner.handle}</span>
+                        </>
+                      ) : (
+                        <span className="user-name">选择好友</span>
+                      )}
                     </div>
-                  </header>
-                  <main className="dm-message-stream">
-                    {dmMessages.map((message, index) => {
-                      const prev = dmMessages[index - 1];
-                      const next = dmMessages[index + 1];
-                      const isContinuation =
-                        prev &&
-                        prev.sender_handle === message.sender_handle &&
-                        prev.timestamp === message.timestamp;
-                      const isLastInGroup =
-                        !next ||
-                        next.sender_handle !== message.sender_handle ||
-                        next.timestamp !== message.timestamp;
-                      const isViewerSender = message.sender_handle === dmViewer.handle;
-                      const groupClass = isViewerSender ? 'viewer-message' : 'partner-message';
-                      const avatarClass = isViewerSender ? 'viewer-avatar-bg' : '';
-                      const avatarContent = isViewerSender
-                        ? dmViewer.avatar_icon ?? dmViewer.avatar_char ?? getInitialChar(dmViewer.name)
-                        : dmPartner.avatar_icon ?? dmPartner.avatar_char ?? getInitialChar(dmPartner.name);
-                      const avatarStyle =
-                        !isViewerSender && dmPartner.avatar_bg ? { background: dmPartner.avatar_bg } : undefined;
-
-                      return (
-                        <div
-                          key={`${message.sender_handle}-${index}`}
-                          className={`message-group ${groupClass} ${isContinuation ? 'is-continuation' : ''} ${
-                            isLastInGroup ? 'has-meta' : ''
-                          }`}
+                    {hasActivePartner && (
+                      <div className="dm-header-actions">
+                        <button className="dm-action-btn" type="button" onClick={() => void handleExportNpcChats()}>
+                          导出
+                        </button>
+                        <button
+                          className="dm-action-btn"
+                          type="button"
+                          onClick={() => dmImportInputRef.current?.click()}
                         >
-                          <div className={`message-avatar ${avatarClass}`} style={avatarStyle}>
-                            {avatarContent}
+                          导入
+                        </button>
+                        <button
+                          className="dm-action-btn danger"
+                          type="button"
+                          onClick={() => void handleDeleteNpcChat()}
+                        >
+                          清空
+                        </button>
+                        <input
+                          ref={dmImportInputRef}
+                          type="file"
+                          accept="application/json"
+                          onChange={handleImportNpcChatsFile}
+                          style={{ display: 'none' }}
+                        />
+                      </div>
+                    )}
+                  </header>
+                  {!hasActivePartner ? (
+                    <div className="dm-friend-list">
+                      {matchList.length > 0 ? (
+                        <section className="match-section">
+                          <div className="match-section-title">好友列表</div>
+                          <div className="match-list">
+                            {matchList.map((match) => (
+                              <button
+                                key={match.handle}
+                                type="button"
+                                className="match-item"
+                                onClick={() =>
+                                  setDmPartnerOverride({
+                                    name: match.name,
+                                    handle: match.handle,
+                                    avatar_icon: match.avatar_icon,
+                                    avatar_bg: match.avatar_bg,
+                                  })
+                                }
+                              >
+                                <div
+                                  className="match-avatar"
+                                  style={{ background: match.avatar_bg ?? 'linear-gradient(135deg,#88f,#f88)' }}
+                                >
+                                  {match.avatar_icon ?? getInitialChar(match.name, '')}
+                                </div>
+                                <div className="match-info">
+                                  <span className="match-name">{match.name}</span>
+                                  <span className="match-handle">{match.handle}</span>
+                                </div>
+                              </button>
+                            ))}
                           </div>
-                          <div className="message-content-wrapper">
-                            <div className="message-bubble">{message.content}</div>
-                            <div className="message-meta">
-                              {isViewerSender ? (
-                                <span className={`message-status ${message.is_read ? 'status-read' : 'status-sent'}`}>
-                                  {message.is_read ? '已读' : '送达'}
-                                </span>
-                              ) : null}
-                              <span className="message-timestamp">{message.timestamp}</span>
+                        </section>
+                      ) : (
+                        <div className="dm-empty-tip">暂无好友</div>
+                      )}
+                    </div>
+                  ) : (
+                    <>
+                      <main className="dm-message-stream">
+                        {dmMessages.map((message, index) => {
+                          const prev = dmMessages[index - 1];
+                          const next = dmMessages[index + 1];
+                          const isContinuation =
+                            prev &&
+                            prev.sender_handle === message.sender_handle &&
+                            prev.timestamp === message.timestamp;
+                          const isLastInGroup =
+                            !next ||
+                            next.sender_handle !== message.sender_handle ||
+                            next.timestamp !== message.timestamp;
+                          const isViewerSender = message.sender_handle === dmViewer.handle;
+                          const groupClass = isViewerSender ? 'viewer-message' : 'partner-message';
+                          const avatarClass = isViewerSender ? 'viewer-avatar-bg' : '';
+                          const avatarContent = isViewerSender
+                            ? dmViewer.avatar_icon ?? dmViewer.avatar_char ?? getInitialChar(dmViewer.name, '')
+                            : activeDmPartner.avatar_icon ??
+                              activeDmPartner.avatar_char ??
+                              getInitialChar(activeDmPartner.name, '');
+                          const avatarStyle =
+                            !isViewerSender && activeDmPartner.avatar_bg
+                              ? { background: activeDmPartner.avatar_bg }
+                              : undefined;
+
+                          return (
+                            <div
+                              key={`${message.sender_handle}-${index}`}
+                              className={`message-group ${groupClass} ${isContinuation ? 'is-continuation' : ''} ${
+                                isLastInGroup ? 'has-meta' : ''
+                              }`}
+                            >
+                              <div className={`message-avatar ${avatarClass}`} style={avatarStyle}>
+                                {avatarContent}
+                              </div>
+                              <div className="message-content-wrapper">
+                                <div className="message-bubble">{message.content}</div>
+                                <div className="message-meta">
+                                  {isViewerSender ? (
+                                    <span className={`message-status ${message.is_read ? 'status-read' : 'status-sent'}`}>
+                                      {message.is_read ? '已读' : '送达'}
+                                    </span>
+                                  ) : null}
+                                  <span className="message-timestamp">{message.timestamp}</span>
+                                </div>
+                              </div>
                             </div>
+                          );
+                        })}
+                      </main>
+                      <div
+                        className="dm-staged-messages"
+                        style={{ display: dmStagedMessages.length > 0 ? 'block' : 'none' }}
+                      >
+                        {dmStagedMessages.map((msg, index) => (
+                          <div key={`staged-${index}`} className="staged-message-item">
+                            <span>{msg.length > 30 ? `${msg.substring(0, 27)}...` : msg}</span>
+                            <button
+                              className="remove-staged-btn"
+                              type="button"
+                              onClick={() =>
+                                setDmStagedMessages((prev) => prev.filter((_, msgIndex) => msgIndex !== index))
+                              }
+                            >
+                              ×
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                      <footer className="message-composer">
+                        <div className="composer-input-wrapper">
+                          <textarea
+                            className="composer-input"
+                            placeholder="发送消息…"
+                            rows={1}
+                            value={dmInput}
+                            onChange={(event) => setDmInput(event.target.value)}
+                            onKeyDown={handleDmKeyDown}
+                          ></textarea>
+                          <div className="composer-actions">
+                            <button className="send-btn" type="button" onClick={handleStageMessage}>
+                              添加
+                            </button>
+                            <button className="send-btn major" type="button" onClick={handleSendAllMessages}>
+                              全部发送
+                            </button>
                           </div>
                         </div>
-                      );
-                    })}
-                  </main>
-                  <div
-                    className="dm-staged-messages"
-                    style={{ display: dmStagedMessages.length > 0 ? 'block' : 'none' }}
-                  >
-                    {dmStagedMessages.map((msg, index) => (
-                      <div key={`staged-${index}`} className="staged-message-item">
-                        <span>{msg.length > 30 ? `${msg.substring(0, 27)}...` : msg}</span>
-                        <button
-                          className="remove-staged-btn"
-                          type="button"
-                          onClick={() =>
-                            setDmStagedMessages((prev) => prev.filter((_, msgIndex) => msgIndex !== index))
-                          }
-                        >
-                          ×
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                  <footer className="message-composer">
-                    <div className="composer-input-wrapper">
-                      <textarea
-                        className="composer-input"
-                        placeholder="发送消息…"
-                        rows={1}
-                        value={dmInput}
-                        onChange={(event) => setDmInput(event.target.value)}
-                        onKeyDown={handleDmKeyDown}
-                      ></textarea>
-                      <div className="composer-actions">
-                        <button className="send-btn" type="button" onClick={handleStageMessage}>
-                          添加
-                        </button>
-                        <button className="send-btn major" type="button" onClick={handleSendAllMessages}>
-                          全部发送
-                        </button>
-                      </div>
-                    </div>
-                  </footer>
+                      </footer>
+                    </>
+                  )}
                 </div>
               </div>
             </section>

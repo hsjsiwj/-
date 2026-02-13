@@ -597,6 +597,19 @@ body.is-fullscreen {
   margin-left: auto;
 }
 
+.view-feed .comment-delete-btn {
+  background: none;
+  border: none;
+  font-size: 12px;
+  color: #d14343;
+  cursor: pointer;
+  padding: 2px 5px;
+}
+
+.view-feed .comment-delete-btn:hover {
+  color: #b42318;
+}
+
 .view-feed .comment-reply-btn:hover {
   color: #111;
 }
@@ -644,6 +657,18 @@ body.is-fullscreen {
   margin-bottom: 2px;
 }
 
+.view-feed .reply-delete-btn {
+  margin-left: auto;
+  background: none;
+  border: none;
+  font-size: 12px;
+  color: #d14343;
+  cursor: pointer;
+}
+
+.view-feed .reply-delete-btn:hover {
+  color: #b42318;
+}
 .view-feed .reply-user-name {
   font-weight: bold;
   font-size: 13px;
@@ -661,6 +686,16 @@ body.is-fullscreen {
   font-size: 13px;
   color: #333;
   line-height: 1.4;
+}
+
+.view-feed .post-replies {
+  margin-bottom: 12px;
+}
+
+.view-feed .post-replies-label {
+  font-size: 12px;
+  color: #657786;
+  margin-bottom: 6px;
 }
 
 .view-feed .comment-input-area {
@@ -973,6 +1008,124 @@ body.is-fullscreen {
   flex-grow: 1;
   overflow-y: auto;
   background-color: var(--surface-color);
+}
+
+.view-dm .dm-friend-list {
+  flex: 1;
+  overflow-y: auto;
+  background-color: var(--surface-color);
+}
+
+.view-dm .dm-empty-tip {
+  padding: 20px;
+  text-align: center;
+  color: var(--text-secondary);
+}
+
+.view-dm .match-section {
+  padding: 16px 20px;
+  border-bottom: 8px solid #f0f2f5;
+  background: var(--card-color);
+}
+
+.view-dm .match-section-title {
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+
+.view-dm .match-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.view-dm .match-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: transparent;
+  border: none;
+  padding: 8px 0;
+  cursor: pointer;
+  text-align: left;
+}
+
+.view-dm .match-avatar {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  color: #fff;
+}
+
+.view-dm .match-info {
+  display: flex;
+  flex-direction: column;
+}
+
+.view-dm .match-name {
+  font-weight: 600;
+}
+
+.view-dm .match-handle {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.view-user .match-section {
+  padding: 16px 20px;
+  border-bottom: 8px solid #f0f2f5;
+  background: var(--card-color);
+}
+
+.view-user .match-section-title {
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+
+.view-user .match-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.view-user .match-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: transparent;
+  border: none;
+  padding: 8px 0;
+  cursor: pointer;
+  text-align: left;
+}
+
+.view-user .match-avatar {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  color: #fff;
+}
+
+.view-user .match-info {
+  display: flex;
+  flex-direction: column;
+}
+
+.view-user .match-name {
+  font-weight: 600;
+}
+
+.view-user .match-handle {
+  font-size: 12px;
+  color: var(--text-secondary);
 }
 
 .view-user .post-card {
@@ -1734,6 +1887,47 @@ body.is-fullscreen {
   gap: 10px;
 }
 
+.view-dm .dm-header-avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.view-dm .dm-header-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+}
+
+.view-dm .dm-action-btn {
+  background: #eef1f5;
+  border: none;
+  border-radius: 10px;
+  color: #111;
+  font-size: 12px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.view-dm .dm-action-btn:hover {
+  background: #e1e6ee;
+}
+
+.view-dm .dm-action-btn.danger {
+  background: #ffe4e6;
+  color: #b42318;
+}
+
+.view-dm .dm-action-btn.danger:hover {
+  background: #fecdd3;
+}
+
 .view-dm .dm-header .back-btn {
   background: none;
   border: none;
@@ -1741,6 +1935,11 @@ body.is-fullscreen {
   color: #111;
   cursor: pointer;
   padding: 5px;
+}
+
+.view-dm .dm-header .back-btn svg {
+  width: 20px;
+  height: 20px;
 }
 
 .view-dm .dm-header .user-info {
@@ -1795,6 +1994,8 @@ body.is-fullscreen {
   font-size: 20px;
   transition: visibility 0s;
   margin-bottom: 20px;
+  background-color: #e2e8f0;
+  color: #0f172a;
 }
 
 .view-dm .message-group.is-continuation .message-avatar {
@@ -1802,8 +2003,8 @@ body.is-fullscreen {
 }
 
 .view-dm .viewer-avatar-bg {
-  background-image: linear-gradient(135deg, #88f, #f88);
-  color: white;
+  background-image: linear-gradient(135deg, #94a3b8, #cbd5e1);
+  color: #0f172a;
 }
 
 .view-dm .message-content-wrapper {
@@ -1858,6 +2059,7 @@ body.is-fullscreen {
 
 .view-dm .partner-message .message-avatar {
   order: -1;
+  color: #ffffff;
 }
 
 .view-dm .viewer-message {
@@ -1870,8 +2072,8 @@ body.is-fullscreen {
 }
 
 .view-dm .viewer-message .message-bubble {
-  background-color: #88f;
-  color: white;
+  background-color: #a5b4fc;
+  color: #1e1b4b;
   border-bottom-right-radius: 4px;
 }
 
@@ -2007,11 +2209,39 @@ body.theme-dark .view-profile .profile-main-info {
   border-color: rgba(255, 255, 255, 0.08);
 }
 
+body.theme-dark .view-dm .dm-action-btn {
+  background: rgba(255, 255, 255, 0.12);
+  color: #f7f7f7;
+}
+
+body.theme-dark .view-dm .dm-action-btn.danger {
+  background: rgba(239, 68, 68, 0.2);
+  color: #fecaca;
+}
+
 body.theme-dark .view-feed .post-card,
 body.theme-dark .view-user .post-card,
 body.theme-dark .view-profile .post-card {
   background-color: #0b1220;
   border-color: rgba(255, 255, 255, 0.06);
+}
+
+body.theme-dark .view-user .match-section {
+  background-color: #0b1220;
+  border-bottom-color: rgba(255, 255, 255, 0.06);
+}
+
+body.theme-dark .view-user .stat-value {
+  color: #e5e7eb;
+}
+
+body.theme-dark .view-user .stat-label {
+  color: #9ca3af;
+}
+
+body.theme-dark .view-dm .match-section {
+  background-color: #0b1220;
+  border-bottom-color: rgba(255, 255, 255, 0.06);
 }
 
 body.theme-dark .view-feed .post-body,
@@ -2081,6 +2311,21 @@ body.theme-dark .view-dm .partner-message .message-bubble {
 }
 
 body.theme-dark .view-dm .viewer-message .message-bubble {
-  background-color: #4f46e5;
+  background-color: #334155;
+  color: #e2e8f0;
+}
+
+body.theme-dark .view-dm .viewer-avatar-bg {
+  background-image: linear-gradient(135deg, #475569, #64748b);
+  color: #e2e8f0;
+}
+
+body.theme-dark .view-dm .message-avatar {
+  background-color: #1f2937;
+  color: #e2e8f0;
+}
+
+body.theme-dark .view-dm .dm-header-avatar {
+  color: #e2e8f0;
 }
 
